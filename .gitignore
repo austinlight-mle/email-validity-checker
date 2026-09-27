@@ -5,9 +5,6 @@ dist/
 publish/
 publish_single/
 
-# Secrets
-.env
-
 # IDE / OS
 .vs/
 *.user

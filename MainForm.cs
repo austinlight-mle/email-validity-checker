@@ -91,8 +91,9 @@ internal sealed class MainForm : Form
         {
             UseSystemPasswordChar = true,
             Dock                  = DockStyle.Fill,
-            Text                  = EmailLogic.LoadEnvApiKey(),
+            Text                  = EmailLogic.LoadApiKey(),
         };
+        _apiKeyBox.Leave += (_, _) => EmailLogic.SaveApiKey(_apiKeyBox.Text);
         apiRow.Controls.Add(apiLabel,   0, 0);
         apiRow.Controls.Add(_apiKeyBox, 1, 0);
 
@@ -185,6 +186,8 @@ internal sealed class MainForm : Form
 
         Controls.Add(content);
         Controls.Add(statusPanel);
+
+        FormClosing += (_, _) => EmailLogic.SaveApiKey(_apiKeyBox.Text);
     }
 
     // ── Helper ────────────────────────────────────────────────────────────────

@@ -245,18 +245,26 @@ internal static class EmailLogic
         return created;
     }
 
-    // ── .env loader ───────────────────────────────────────────────────────────
+    // ── API key persistence ───────────────────────────────────────────────────
 
-    public static string LoadEnvApiKey()
+    private static readonly string ConfigDir =
+        Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "EmailChecker");
+    private static readonly string ApiKeyFile =
+        Path.Combine(ConfigDir, "apikey.txt");
+
+    public static string LoadApiKey()
     {
-        var dir = AppContext.BaseDirectory;
-        var env = Path.Combine(dir, ".env");
-        if (!File.Exists(env)) return string.Empty;
-        foreach (var line in File.ReadLines(env))
+        try { return File.Exists(ApiKeyFile) ? File.ReadAllText(ApiKeyFile).Trim() : string.Empty; }
+        catch { return string.Empty; }
+    }
+
+    public static void SaveApiKey(string key)
+    {
+        try
         {
-            if (line.StartsWith("YCHECKER_API_KEY="))
-                return line["YCHECKER_API_KEY=".Length..].Trim();
+            Directory.CreateDirectory(ConfigDir);
+            File.WriteAllText(ApiKeyFile, key.Trim());
         }
-        return string.Empty;
+        catch { }
     }
 }
