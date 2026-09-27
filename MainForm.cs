@@ -9,37 +9,50 @@ internal sealed class MainForm : Form
     private readonly CheckBox      _dedupCb;
     private readonly CheckBox      _validityCb;
     private readonly CheckBox      _groupCb;
+    private readonly NumericUpDown _threadBox;
     private readonly RichTextBox   _emailBox;
     private readonly Label         _statusLbl;
     private readonly ProgressBar   _progressBar;
+    private readonly Button        _pauseBtn;
+    private readonly Button        _stopBtn;
+    private readonly Button        _logsBtn;
+    private readonly Button        _saveBtn;
 
     // ── State ─────────────────────────────────────────────────────────────────
-    private readonly List<string>              _filesOrder  = new();
-    private readonly Dictionary<string, string> _filePaths  = new(); // name → full path
-    private readonly Dictionary<string, List<string>> _fileEmails = new(); // name → emails
+    private readonly List<string>                    _filesOrder  = new();
+    private readonly Dictionary<string, string>      _filePaths   = new();
+    private readonly Dictionary<string, List<string>> _fileEmails = new();
+    private readonly List<string>                    _logLines    = new();
 
-    private bool _busy;
-    private bool _dedupDone;
+    private bool   _busy;
+    private bool   _dedupDone;
+    private volatile bool _paused;
+    private CancellationTokenSource? _cts;
+    private DateTime _lastUiUpdate = DateTime.MinValue;
+    private string?  _logTempFile;
 
     // ── Constructor ───────────────────────────────────────────────────────────
     public MainForm()
     {
-        Text            = "Email Checker";
-        MinimumSize     = new Size(720, 560);
-        Size            = new Size(820, 640);
-        StartPosition   = FormStartPosition.CenterScreen;
-        Font            = new Font("Segoe UI", 9f);
+        Text          = "Email Checker";
+        MinimumSize   = new Size(480, 520);
+        Size          = new Size(550, 640);
+        StartPosition = FormStartPosition.CenterScreen;
+        Font          = new Font("Segoe UI", 9f);
 
-        // ── Status bar (bottom) ───────────────────────────────────────────────
-        var statusPanel = new Panel { Dock = DockStyle.Bottom, Height = 28 };
-        _statusLbl = new Label
+        try
         {
-            AutoSize    = false,
-            TextAlign   = ContentAlignment.MiddleLeft,
-            Width       = 280,
-            Dock        = DockStyle.Left,
-            Text        = "Ready",
-            Padding     = new Padding(4, 0, 0, 0),
+            var ico = Icon.ExtractAssociatedIcon(Application.ExecutablePath);
+            if (ico != null) Icon = ico;
+        }
+        catch { }
+
+        // ── Progress bar (docked bottom, slim, with bottom margin via padding) ─
+        var progressPanel = new Panel
+        {
+            Dock    = DockStyle.Bottom,
+            Height  = 22,
+            Padding = new Padding(10, 3, 10, 6),
         };
         _progressBar = new ProgressBar
         {
@@ -49,32 +62,30 @@ internal sealed class MainForm : Form
             Value   = 0,
             Style   = ProgressBarStyle.Continuous,
         };
-        statusPanel.Controls.Add(_progressBar);
-        statusPanel.Controls.Add(_statusLbl);  // Left docks over Fill, so add last
+        progressPanel.Controls.Add(_progressBar);
 
-        // ── Content area (fills above status bar) ─────────────────────────────
+        // ── Content area ─────────────────────────────────────────────────────
         var content = new TableLayoutPanel
         {
             Dock        = DockStyle.Fill,
             ColumnCount = 1,
-            RowCount    = 5,
-            Padding     = new Padding(12),
+            RowCount    = 6,
+            Padding     = new Padding(12, 12, 12, 6),
         };
         content.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
         content.RowStyles.Add(new RowStyle(SizeType.AutoSize));       // 0: API key
         content.RowStyles.Add(new RowStyle(SizeType.AutoSize));       // 1: File controls
-        content.RowStyles.Add(new RowStyle(SizeType.AutoSize));       // 2: Checkboxes
-        content.RowStyles.Add(new RowStyle(SizeType.Percent, 100));   // 3: Email text (grows)
-        content.RowStyles.Add(new RowStyle(SizeType.AutoSize));       // 4: Save button
+        content.RowStyles.Add(new RowStyle(SizeType.AutoSize));       // 2: Checkboxes + threads
+        content.RowStyles.Add(new RowStyle(SizeType.Percent, 100));   // 3: Email text
+        content.RowStyles.Add(new RowStyle(SizeType.AutoSize));       // 4: Action buttons
+        content.RowStyles.Add(new RowStyle(SizeType.AutoSize));       // 5: Status label
 
         // ── Row 0: API key ────────────────────────────────────────────────────
         var apiRow = new TableLayoutPanel
         {
-            ColumnCount     = 2,
-            RowCount        = 1,
-            Dock            = DockStyle.Fill,
-            AutoSize        = true,
-            Margin          = new Padding(0, 0, 0, 12),
+            ColumnCount = 2, RowCount = 1,
+            Dock = DockStyle.Fill, AutoSize = true,
+            Margin = new Padding(0, 0, 0, 10),
         };
         apiRow.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
         apiRow.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
@@ -82,16 +93,16 @@ internal sealed class MainForm : Form
 
         var apiLabel = new Label
         {
-            Text      = "API key",
-            AutoSize  = true,
-            Anchor    = AnchorStyles.Left | AnchorStyles.Top,
-            Padding   = new Padding(0, 4, 8, 0),
+            Text    = "API key",
+            AutoSize = true,
+            Anchor  = AnchorStyles.Left | AnchorStyles.Top,
+            Padding = new Padding(0, 4, 8, 0),
         };
         _apiKeyBox = new TextBox
         {
             UseSystemPasswordChar = true,
-            Dock                  = DockStyle.Fill,
-            Text                  = EmailLogic.LoadApiKey(),
+            Dock = DockStyle.Fill,
+            Text = EmailLogic.LoadApiKey(),
         };
         _apiKeyBox.Leave += (_, _) => EmailLogic.SaveApiKey(_apiKeyBox.Text);
         apiRow.Controls.Add(apiLabel,   0, 0);
@@ -100,23 +111,20 @@ internal sealed class MainForm : Form
         // ── Row 1: File controls ──────────────────────────────────────────────
         var fileRow = new TableLayoutPanel
         {
-            ColumnCount = 2,
-            RowCount    = 1,
-            Dock        = DockStyle.Fill,
-            AutoSize    = true,
-            Margin      = new Padding(0, 0, 0, 10),
+            ColumnCount = 2, RowCount = 1,
+            Dock = DockStyle.Fill, AutoSize = true,
+            Margin = new Padding(0, 0, 0, 10),
         };
         fileRow.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
         fileRow.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
         fileRow.RowStyles.Add(new RowStyle(SizeType.AutoSize));
 
-        // Buttons column
         var btnPanel = new FlowLayoutPanel
         {
-            FlowDirection  = FlowDirection.TopDown,
-            AutoSize       = true,
-            WrapContents   = false,
-            Padding        = new Padding(0, 0, 10, 0),
+            FlowDirection = FlowDirection.TopDown,
+            AutoSize      = true,
+            WrapContents  = false,
+            Padding       = new Padding(0, 0, 8, 0),
         };
         var importBtn = MakeButton("Import …", OnImport);
         _removeBtn    = MakeButton("Remove",   OnRemove);
@@ -124,13 +132,12 @@ internal sealed class MainForm : Form
         _removeBtn.Enabled = false;
         btnPanel.Controls.AddRange(new Control[] { importBtn, _removeBtn, clearBtn });
 
-        // File list box
         _fileList = new ListBox
         {
             Dock              = DockStyle.Fill,
             SelectionMode     = SelectionMode.One,
             HorizontalScrollbar = true,
-            Height            = 120,
+            Height            = 110,
         };
         _fileList.SelectedIndexChanged += (_, _) =>
             _removeBtn.Enabled = !_busy && _fileList.SelectedIndex >= 0;
@@ -138,69 +145,144 @@ internal sealed class MainForm : Form
         fileRow.Controls.Add(btnPanel,  0, 0);
         fileRow.Controls.Add(_fileList, 1, 0);
 
-        // ── Row 2: Checkboxes ─────────────────────────────────────────────────
-        var cbPanel = new FlowLayoutPanel
+        // ── Row 2: Checkboxes (left) + Threads (right) ────────────────────────
+        var cbRow = new TableLayoutPanel
         {
-            Dock          = DockStyle.Fill,
+            ColumnCount = 2, RowCount = 1,
+            Dock = DockStyle.Fill, AutoSize = true,
+            Margin = new Padding(0, 0, 0, 8),
+        };
+        cbRow.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        cbRow.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+        cbRow.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+
+        var cbFlow = new FlowLayoutPanel
+        {
             AutoSize      = true,
             FlowDirection = FlowDirection.LeftToRight,
-            Margin        = new Padding(0, 0, 0, 8),
+            Dock          = DockStyle.Fill,
         };
-        _dedupCb    = new CheckBox { Text = "de-duplicate",    AutoSize = true, Margin = new Padding(0, 2, 20, 2) };
-        _validityCb = new CheckBox { Text = "check validity",  AutoSize = true, Margin = new Padding(0, 2, 20, 2) };
+        _dedupCb    = new CheckBox { Text = "de-duplicate",    AutoSize = true, Margin = new Padding(0, 2, 14, 2) };
+        _validityCb = new CheckBox { Text = "check validity",  AutoSize = true, Margin = new Padding(0, 2, 14, 2) };
         _groupCb    = new CheckBox { Text = "group by domain", AutoSize = true, Margin = new Padding(0, 2, 0,  2) };
-
         _dedupCb.CheckedChanged    += OnDedup;
         _validityCb.CheckedChanged += OnCheckValidity;
         _groupCb.CheckedChanged    += OnGroupByDomain;
+        cbFlow.Controls.AddRange(new Control[] { _dedupCb, _validityCb, _groupCb });
 
-        cbPanel.Controls.AddRange(new Control[] { _dedupCb, _validityCb, _groupCb });
+        var threadsFlow = new FlowLayoutPanel
+        {
+            AutoSize      = true,
+            FlowDirection = FlowDirection.LeftToRight,
+            Anchor        = AnchorStyles.Right | AnchorStyles.Top,
+        };
+        var threadsLbl = new Label
+        {
+            Text     = "Threads:",
+            AutoSize = true,
+            Anchor   = AnchorStyles.Left | AnchorStyles.Top,
+            Padding  = new Padding(0, 4, 4, 0),
+        };
+        _threadBox = new NumericUpDown
+        {
+            Minimum   = 1,
+            Maximum   = 20,
+            Value     = 4,
+            Width     = 52,
+            TextAlign = HorizontalAlignment.Center,
+        };
+        threadsFlow.Controls.Add(threadsLbl);
+        threadsFlow.Controls.Add(_threadBox);
+
+        cbRow.Controls.Add(cbFlow,      0, 0);
+        cbRow.Controls.Add(threadsFlow, 1, 0);
 
         // ── Row 3: Email text area ────────────────────────────────────────────
         _emailBox = new RichTextBox
         {
-            Dock        = DockStyle.Fill,
-            Font        = new Font("Consolas", 9f),
-            WordWrap    = false,
-            ScrollBars  = RichTextBoxScrollBars.Both,
-            DetectUrls  = false,
+            Dock       = DockStyle.Fill,
+            Font       = new Font("Consolas", 9f),
+            WordWrap   = false,
+            ScrollBars = RichTextBoxScrollBars.Both,
+            DetectUrls = false,
         };
 
-        // ── Row 4: Save button ────────────────────────────────────────────────
-        var savePanel = new FlowLayoutPanel
+        // ── Row 4: Action buttons — Pause, Stop, Logs (left) | Save (right) ───
+        var actionRow = new TableLayoutPanel
         {
-            Dock          = DockStyle.Fill,
-            FlowDirection = FlowDirection.LeftToRight,
-            AutoSize      = true,
-            Margin        = new Padding(0, 8, 0, 0),
+            ColumnCount = 2, RowCount = 1,
+            Dock = DockStyle.Fill, AutoSize = true,
+            Margin = new Padding(0, 8, 0, 2),
         };
-        var saveBtn = MakeButton("Save", OnSave);
-        savePanel.Controls.Add(saveBtn);
+        actionRow.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
+        actionRow.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
+        actionRow.RowStyles.Add(new RowStyle(SizeType.AutoSize));
 
-        // ── Assemble layout ───────────────────────────────────────────────────
-        content.Controls.Add(apiRow,   0, 0);
-        content.Controls.Add(fileRow,  0, 1);
-        content.Controls.Add(cbPanel,  0, 2);
-        content.Controls.Add(_emailBox,0, 3);
-        content.Controls.Add(savePanel,0, 4);
+        var leftBtns = new FlowLayoutPanel
+        {
+            AutoSize      = true,
+            FlowDirection = FlowDirection.LeftToRight,
+            Anchor        = AnchorStyles.Left | AnchorStyles.Top,
+        };
+        _pauseBtn = MakeButton("Pause", OnPause);
+        _stopBtn  = MakeButton("Stop",  OnStop);
+        _logsBtn  = MakeButton("Logs",  OnShowLogs);
+        _pauseBtn.Enabled = false;
+        _stopBtn.Enabled  = false;
+        leftBtns.Controls.AddRange(new Control[] { _pauseBtn, _stopBtn, _logsBtn });
+
+        var rightBtns = new FlowLayoutPanel
+        {
+            AutoSize      = true,
+            FlowDirection = FlowDirection.RightToLeft,
+            Dock          = DockStyle.Fill,
+        };
+        _saveBtn = MakeButton("Save", OnSave);
+        rightBtns.Controls.Add(_saveBtn);
+
+        actionRow.Controls.Add(leftBtns,  0, 0);
+        actionRow.Controls.Add(rightBtns, 1, 0);
+
+        // ── Row 5: Status label ───────────────────────────────────────────────
+        _statusLbl = new Label
+        {
+            Dock      = DockStyle.Fill,
+            AutoSize  = false,
+            TextAlign = ContentAlignment.MiddleLeft,
+            Text      = "Ready",
+            Height    = 20,
+            ForeColor = SystemColors.GrayText,
+        };
+
+        // ── Assemble ─────────────────────────────────────────────────────────
+        content.Controls.Add(apiRow,     0, 0);
+        content.Controls.Add(fileRow,    0, 1);
+        content.Controls.Add(cbRow,      0, 2);
+        content.Controls.Add(_emailBox,  0, 3);
+        content.Controls.Add(actionRow,  0, 4);
+        content.Controls.Add(_statusLbl, 0, 5);
 
         Controls.Add(content);
-        Controls.Add(statusPanel);
+        Controls.Add(progressPanel);
 
-        FormClosing += (_, _) => EmailLogic.SaveApiKey(_apiKeyBox.Text);
+        FormClosing += (_, _) =>
+        {
+            EmailLogic.SaveApiKey(_apiKeyBox.Text);
+            DeleteLogTemp();
+        };
     }
 
-    // ── Helper ────────────────────────────────────────────────────────────────
+    // ── Helpers ───────────────────────────────────────────────────────────────
 
     private static Button MakeButton(string text, EventHandler handler)
     {
         var b = new Button
         {
-            Text      = text,
-            AutoSize  = false,
-            Width     = 100,
-            Height    = 28,
-            Margin    = new Padding(0, 0, 0, 4),
+            Text     = text,
+            AutoSize = false,
+            Width    = 80,
+            Height   = 28,
+            Margin   = new Padding(0, 0, 4, 0),
         };
         b.Click += handler;
         return b;
@@ -212,8 +294,8 @@ internal sealed class MainForm : Form
     {
         using var dlg = new OpenFileDialog
         {
-            Title     = "Import email files",
-            Filter    = "Text files (*.txt)|*.txt|All files (*.*)|*.*",
+            Title       = "Import email files",
+            Filter      = "Text files (*.txt)|*.txt|All files (*.*)|*.*",
             Multiselect = true,
         };
         if (dlg.ShowDialog(this) != DialogResult.OK) return;
@@ -237,12 +319,12 @@ internal sealed class MainForm : Form
             imported++;
         }
         RefreshEmailText();
-        SetStatus($"Imported {imported} file(s) — {TotalEmailCount()} emails", 0);
+        SetStatus($"Imported {imported} file(s) — {TotalEmailCount()} emails");
     }
 
     private void OnRemove(object? s, EventArgs e)
     {
-        var idx  = _fileList.SelectedIndex;
+        var idx = _fileList.SelectedIndex;
         if (idx < 0) return;
         var name = (string)_fileList.Items[idx]!;
         _fileList.Items.RemoveAt(idx);
@@ -251,7 +333,7 @@ internal sealed class MainForm : Form
         _fileEmails.Remove(name);
         _removeBtn.Enabled = false;
         RefreshEmailText();
-        SetStatus($"Removed — {TotalEmailCount()} emails remain", 0);
+        SetStatus($"Removed — {TotalEmailCount()} emails remain");
     }
 
     private void OnClearAll(object? s, EventArgs e)
@@ -262,7 +344,7 @@ internal sealed class MainForm : Form
         _fileEmails.Clear();
         _removeBtn.Enabled = false;
         RefreshEmailText();
-        SetStatus("Cleared — 0 emails", 0);
+        SetStatus("Cleared — 0 emails");
     }
 
     private void RefreshEmailText()
@@ -291,7 +373,7 @@ internal sealed class MainForm : Form
 
         _dedupDone       = true;
         _dedupCb.Enabled = false;
-        SetStatus($"de-duplicate: removed {removed}, {unique.Count} remain", 100);
+        SetStatus($"De-duplicate: removed {removed}, {unique.Count} remain", 100);
     }
 
     private void OnCheckValidity(object? s, EventArgs e)
@@ -330,33 +412,166 @@ internal sealed class MainForm : Form
         string apiKey, List<string> emailsToCheck, List<string> existingInvalid)
     {
         LockControls();
+        _cts = new CancellationTokenSource();
+        var ct = _cts.Token;
+        _lastUiUpdate = DateTime.MinValue;
 
-        var valid   = new List<string>();
-        var invalid = new List<string>(existingInvalid);
-        int total   = emailsToCheck.Count;
+        _logLines.Clear();
+        Log($"=== Validity check started: {DateTime.Now:yyyy-MM-dd HH:mm:ss} ===");
+        Log($"Emails: {emailsToCheck.Count}  |  Threads: {(int)_threadBox.Value}");
+        Log(new string('-', 60));
 
-        for (int i = 0; i < total; i++)
+        int threads   = (int)_threadBox.Value;
+        int total     = emailsToCheck.Count;
+        int completed = 0;
+
+        var valid        = new List<string>();
+        var invalid      = new List<string>(existingInvalid);
+        var sem          = new SemaphoreSlim(threads, threads);
+        var pendingTasks = new List<Task>();
+
+        foreach (var email in emailsToCheck)
         {
-            var (isValid, _) = await EmailLogic.CheckEmailValidityAsync(emailsToCheck[i], apiKey);
-            if (isValid) valid.Add(emailsToCheck[i]);
-            else         invalid.Add(emailsToCheck[i]);
+            // Honour pause before dispatching the next slot
+            while (_paused && !ct.IsCancellationRequested)
+                await Task.Delay(80);
 
-            double pct = (double)(i + 1) / total * 100;
-            SetStatus($"Checking {i + 1}/{total} …", (int)pct);
+            if (ct.IsCancellationRequested) break;
+
+            try { await sem.WaitAsync(ct); }
+            catch (OperationCanceledException) { break; }
+
+            var emailCopy = email;
+            var t = Task.Run(async () =>
+            {
+                try
+                {
+                    var (isValid, status) = await EmailLogic.CheckEmailValidityAsync(emailCopy, apiKey);
+
+                    List<string> validSnap, invalidSnap;
+                    int done;
+                    lock (valid)
+                    {
+                        if (isValid) valid.Add(emailCopy);
+                        else         invalid.Add(emailCopy);
+                        done      = ++completed;
+                        validSnap   = new List<string>(valid);
+                        invalidSnap = new List<string>(invalid);
+                    }
+
+                    this.Invoke(() =>
+                    {
+                        Log($"[{(isValid ? " OK " : "INVL")}] {emailCopy} — {status}");
+
+                        var now = DateTime.Now;
+                        if ((now - _lastUiUpdate).TotalMilliseconds >= 250)
+                        {
+                            UpdateEmailBoxRealtime(validSnap, invalidSnap);
+                            _lastUiUpdate = now;
+                        }
+                        SetStatus($"Checking {done}/{total} …",
+                            (int)((double)done / total * 100));
+                    });
+                }
+                finally { sem.Release(); }
+            });
+            pendingTasks.Add(t);
         }
 
-        // Rebuild: re-group if the group checkbox is still on, otherwise flat
+        try { await Task.WhenAll(pendingTasks); } catch { }
+
+        List<string> finalValid, finalInvalid;
+        lock (valid) { finalValid = new List<string>(valid); finalInvalid = new List<string>(invalid); }
+
+        this.Invoke(() =>
+        {
+            UpdateEmailBoxRealtime(finalValid, finalInvalid);
+            UnlockControls();
+            _validityCb.Checked = false;
+            bool stopped   = ct.IsCancellationRequested;
+            int newInvalid = finalInvalid.Count - existingInvalid.Count;
+            var summary    = stopped
+                ? $"Stopped — {newInvalid} invalid found, {finalValid.Count} valid kept"
+                : $"Done — {newInvalid} invalid, {finalValid.Count} valid remain";
+
+            Log(new string('-', 60));
+            Log(summary);
+            Log($"=== Finished: {DateTime.Now:yyyy-MM-dd HH:mm:ss} ===");
+
+            SetStatus(summary, stopped ? _progressBar.Value : 100);
+        });
+    }
+
+    private void UpdateEmailBoxRealtime(List<string> valid, List<string> invalid)
+    {
         string mainText = _groupCb.Checked
             ? EmailLogic.FormatGrouped(EmailLogic.GroupByDomain(valid))
             : string.Join(Environment.NewLine, valid);
-
         _emailBox.Text = EmailLogic.MergeWithInvalid(mainText, invalid);
-
-        UnlockControls();
-        _validityCb.Checked = false;  // reset so user can run again
-        SetStatus($"check validity: {invalid.Count - existingInvalid.Count} new invalid found, " +
-                  $"{valid.Count} valid remain", 100);
     }
+
+    // ── Pause / Stop / Logs ───────────────────────────────────────────────────
+
+    private void OnPause(object? s, EventArgs e)
+    {
+        if (!_busy) return;
+        _paused = !_paused;
+        _pauseBtn.Text = _paused ? "Resume" : "Pause";
+        var msg = _paused ? "Paused — click Resume to continue" : "Resuming …";
+        Log($"[----] {msg}");
+        SetStatus(msg, _progressBar.Value);
+    }
+
+    private void OnStop(object? s, EventArgs e)
+    {
+        _cts?.Cancel();
+        _paused           = false;
+        _pauseBtn.Text    = "Pause";
+        _stopBtn.Enabled  = false;
+        _pauseBtn.Enabled = false;
+        Log("[----] Stopped by user");
+        SetStatus("Stopping …", _progressBar.Value);
+    }
+
+    private void OnShowLogs(object? s, EventArgs e)
+    {
+        if (_logLines.Count == 0)
+        {
+            MessageBox.Show("No log entries yet. Run a validity check first.",
+                "Logs", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            return;
+        }
+
+        try
+        {
+            DeleteLogTemp();
+            _logTempFile = Path.Combine(Path.GetTempPath(),
+                $"EmailChecker_log_{DateTime.Now:yyyyMMdd_HHmmss}.txt");
+            File.WriteAllLines(_logTempFile, _logLines);
+            System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo
+            {
+                FileName        = _logTempFile,
+                UseShellExecute = true,
+            });
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show($"Could not open log file:\n{ex.Message}", "Error",
+                MessageBoxButtons.OK, MessageBoxIcon.Error);
+        }
+    }
+
+    private void DeleteLogTemp()
+    {
+        if (_logTempFile == null) return;
+        try { if (File.Exists(_logTempFile)) File.Delete(_logTempFile); } catch { }
+        _logTempFile = null;
+    }
+
+    private void Log(string line) =>
+        _logLines.Add($"{DateTime.Now:HH:mm:ss.fff}  {line}");
+
+    // ── Group by domain ───────────────────────────────────────────────────────
 
     private void OnGroupByDomain(object? s, EventArgs e)
     {
@@ -370,14 +585,14 @@ internal sealed class MainForm : Form
             var groups = EmailLogic.GroupByDomain(emails);
             _emailBox.Text = EmailLogic.MergeWithInvalid(
                 EmailLogic.FormatGrouped(groups), invalid);
-            SetStatus($"group by domain: {groups.Count} group(s)", 100);
+            SetStatus($"Group by domain: {groups.Count} group(s)", 100);
         }
         else
         {
             var flat = EmailLogic.StripGroupHeaders(main);
             _emailBox.Text = EmailLogic.MergeWithInvalid(
                 string.Join(Environment.NewLine, flat), invalid);
-            SetStatus("group by domain: ungrouped", 0);
+            SetStatus("Group by domain: ungrouped", 0);
         }
     }
 
@@ -385,45 +600,44 @@ internal sealed class MainForm : Form
 
     private void OnSave(object? s, EventArgs e)
     {
-        var content = _emailBox.Text.Trim();
-        if (string.IsNullOrEmpty(content))
+        var text = _emailBox.Text.Trim();
+        if (string.IsNullOrEmpty(text))
         {
             MessageBox.Show("The email list is empty.", "Nothing to save",
                 MessageBoxButtons.OK, MessageBoxIcon.Information);
             return;
         }
 
-        // Check if any section headers exist (including INVALID)
-        bool isGrouped = content.Split('\n')
+        bool isGrouped = text.Split('\n')
             .Any(l => l.Trim().StartsWith("=== ") && l.Trim().EndsWith(" ==="));
 
         if (isGrouped)
-        {
-            SaveGroupedFiles(content);
-        }
+            SaveGroupedFiles(text);
         else
         {
             var ts = DateTime.Now.ToString("yyyyMMdd_HHmmss");
             using var dlg = new SaveFileDialog
             {
-                Title             = "Save emails",
-                Filter            = "Text files (*.txt)|*.txt|All files (*.*)|*.*",
-                FileName          = $"emails_{ts}.txt",
-                DefaultExt        = "txt",
+                Title      = "Save emails",
+                Filter     = "Text files (*.txt)|*.txt|All files (*.*)|*.*",
+                FileName   = $"emails_{ts}.txt",
+                DefaultExt = "txt",
             };
             if (dlg.ShowDialog(this) != DialogResult.OK) return;
-            File.WriteAllText(dlg.FileName, content);
+            File.WriteAllText(dlg.FileName, text);
             SetStatus($"Saved → {Path.GetFileName(dlg.FileName)}", 100);
         }
     }
 
-    private void SaveGroupedFiles(string content)
+    private void SaveGroupedFiles(string text)
     {
-        using var dlg = new FolderBrowserDialog { Description = "Select folder to save grouped files" };
+        using var dlg = new FolderBrowserDialog
+        {
+            Description = "Select folder to save grouped files",
+        };
         if (dlg.ShowDialog(this) != DialogResult.OK) return;
 
-        var groups = EmailLogic.ParseGroupedText(content);
-        // Lower-case keys for filenames
+        var groups = EmailLogic.ParseGroupedText(text);
         var lowerGroups = groups.ToDictionary(
             kv => kv.Key.ToLowerInvariant(), kv => kv.Value,
             StringComparer.OrdinalIgnoreCase);
@@ -438,36 +652,47 @@ internal sealed class MainForm : Form
 
     private void LockControls()
     {
-        _busy = true;
+        _busy   = true;
+        _paused = false;
         _apiKeyBox.Enabled  = false;
         _removeBtn.Enabled  = false;
         _dedupCb.Enabled    = false;
         _validityCb.Enabled = false;
         _groupCb.Enabled    = false;
+        _threadBox.Enabled  = false;
+        _pauseBtn.Enabled   = true;
+        _pauseBtn.Text      = "Pause";
+        _stopBtn.Enabled    = true;
+        _saveBtn.Enabled    = false;
     }
 
     private void UnlockControls()
     {
-        _busy = false;
+        _busy   = false;
+        _paused = false;
+        _pauseBtn.Text      = "Pause";
         _apiKeyBox.Enabled  = true;
         _removeBtn.Enabled  = _fileList.SelectedIndex >= 0;
         if (!_dedupDone) _dedupCb.Enabled = true;
         _validityCb.Enabled = true;
         _groupCb.Enabled    = true;
+        _threadBox.Enabled  = true;
+        _pauseBtn.Enabled   = false;
+        _stopBtn.Enabled    = false;
+        _saveBtn.Enabled    = true;
     }
 
-    // ── Helpers ───────────────────────────────────────────────────────────────
+    // ── Misc ──────────────────────────────────────────────────────────────────
 
-    /// <summary>All plain emails from the text area, excluding group headers and the invalid section.</summary>
     private List<string> GetPlainEmails()
     {
         var (main, _) = EmailLogic.SplitInvalidSection(_emailBox.Text);
         return EmailLogic.StripGroupHeaders(main);
     }
 
-    private void SetStatus(string text, int pct)
+    private void SetStatus(string text, int pct = -1)
     {
-        _statusLbl.Text   = text;
-        _progressBar.Value = Math.Clamp(pct, 0, 100);
+        _statusLbl.Text = text;
+        if (pct >= 0) _progressBar.Value = Math.Clamp(pct, 0, 100);
     }
 }
