@@ -12,7 +12,10 @@ internal sealed class MainForm : Form
     private readonly NumericUpDown _threadBox;
     private readonly RichTextBox   _emailBox;
     private readonly Label         _statusLbl;
+    private readonly Label         _elapsedLbl;
     private readonly ProgressBar   _progressBar;
+    private readonly System.Windows.Forms.Timer _elapsedTimer = new() { Interval = 1000 };
+    private DateTime _processStart;
     private readonly Button        _pauseBtn;
     private readonly Button        _stopBtn;
     private readonly Button        _logsBtn;
@@ -35,8 +38,8 @@ internal sealed class MainForm : Form
     public MainForm()
     {
         Text          = "Email Checker";
-        MinimumSize   = new Size(380, 400);
-        Size          = new Size(420, 500);
+        MinimumSize   = new Size(460, 400);
+        Size          = new Size(500, 500);
         StartPosition = FormStartPosition.CenterScreen;
         Font          = new Font("Segoe UI", 9f);
 
@@ -63,6 +66,17 @@ internal sealed class MainForm : Form
             Value   = 0,
             Style   = ProgressBarStyle.Continuous,
         };
+        // Status row: status text (left) + elapsed time (right)
+        var statusRow = new Panel { Dock = DockStyle.Fill };
+        _elapsedLbl = new Label
+        {
+            Dock      = DockStyle.Right,
+            AutoSize  = false,
+            Width     = 62,
+            TextAlign = ContentAlignment.MiddleRight,
+            ForeColor = SystemColors.GrayText,
+            Text      = "",
+        };
         _statusLbl = new Label
         {
             Dock      = DockStyle.Fill,
@@ -71,8 +85,19 @@ internal sealed class MainForm : Form
             Text      = "Ready",
             ForeColor = SystemColors.GrayText,
         };
+        statusRow.Controls.Add(_elapsedLbl); // Right docks first
+        statusRow.Controls.Add(_statusLbl);  // Fill takes remaining left area
+
         bottomPanel.Controls.Add(_progressBar); // Top → docks first
-        bottomPanel.Controls.Add(_statusLbl);   // Fill → takes remaining space below
+        bottomPanel.Controls.Add(statusRow);    // Fill → status row below
+
+        _elapsedTimer.Tick += (_, _) =>
+        {
+            var e = DateTime.Now - _processStart;
+            _elapsedLbl.Text = e.TotalHours >= 1
+                ? $"{(int)e.TotalHours}:{e.Minutes:D2}:{e.Seconds:D2}"
+                : $"{e.Minutes}:{e.Seconds:D2}";
+        };
 
         // ── Content area ─────────────────────────────────────────────────────
         var content = new TableLayoutPanel
@@ -109,7 +134,6 @@ internal sealed class MainForm : Form
         };
         _apiKeyBox = new TextBox
         {
-            UseSystemPasswordChar = true,
             Dock = DockStyle.Fill,
             Text = EmailLogic.LoadApiKey(),
         };
@@ -624,8 +648,11 @@ internal sealed class MainForm : Form
 
     private void LockControls()
     {
-        _busy   = true;
-        _paused = false;
+        _busy        = true;
+        _paused      = false;
+        _processStart = DateTime.Now;
+        _elapsedLbl.Text    = "0:00";
+        _elapsedTimer.Start();
         _apiKeyBox.Enabled  = false;
         _removeBtn.Enabled  = false;
         _dedupCb.Enabled    = false;
@@ -640,6 +667,7 @@ internal sealed class MainForm : Form
 
     private void UnlockControls()
     {
+        _elapsedTimer.Stop();
         _busy   = false;
         _paused = false;
         _pauseBtn.Text      = "Pause";
