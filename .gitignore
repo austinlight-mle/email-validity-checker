@@ -11,3 +11,5 @@ publish_single/
 *.suo
 .DS_Store
 Thumbs.db
+# Email data files
+emails_*.txt
