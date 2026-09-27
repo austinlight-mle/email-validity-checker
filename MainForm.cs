@@ -16,6 +16,8 @@ internal sealed class MainForm : Form
     private readonly ProgressBar   _progressBar;
     private readonly System.Windows.Forms.Timer _elapsedTimer = new() { Interval = 1000 };
     private DateTime _processStart;
+    private volatile int _processCompleted;
+    private int          _processTotal;
     private readonly Button        _pauseBtn;
     private readonly Button        _stopBtn;
     private readonly Button        _logsBtn;
@@ -72,7 +74,7 @@ internal sealed class MainForm : Form
         {
             Dock      = DockStyle.Right,
             AutoSize  = false,
-            Width     = 62,
+            Width     = 120,
             TextAlign = ContentAlignment.MiddleRight,
             ForeColor = SystemColors.GrayText,
             Text      = "",
@@ -93,10 +95,25 @@ internal sealed class MainForm : Form
 
         _elapsedTimer.Tick += (_, _) =>
         {
-            var e = DateTime.Now - _processStart;
-            _elapsedLbl.Text = e.TotalHours >= 1
-                ? $"{(int)e.TotalHours}:{e.Minutes:D2}:{e.Seconds:D2}"
-                : $"{e.Minutes}:{e.Seconds:D2}";
+            var elapsed  = DateTime.Now - _processStart;
+            var done     = _processCompleted;
+            var total    = _processTotal;
+
+            static string Fmt(TimeSpan t) => t.TotalHours >= 1
+                ? $"{(int)t.TotalHours}:{t.Minutes:D2}:{t.Seconds:D2}"
+                : $"{(int)t.TotalMinutes}:{t.Seconds:D2}";
+
+            var elapsedStr = Fmt(elapsed);
+
+            if (done > 0 && total > done)
+            {
+                var remaining = TimeSpan.FromSeconds(elapsed.TotalSeconds / done * (total - done));
+                _elapsedLbl.Text = $"{elapsedStr} / {Fmt(remaining)}";
+            }
+            else
+            {
+                _elapsedLbl.Text = elapsedStr;
+            }
         };
 
         // ── Content area ─────────────────────────────────────────────────────
@@ -205,7 +222,7 @@ internal sealed class MainForm : Form
         {
             Minimum   = 1,
             Maximum   = 20,
-            Value     = 4,
+            Value     = 1,
             Width     = 44,
             TextAlign = HorizontalAlignment.Center,
             Margin    = new Padding(0, 1, 0, 0),
@@ -419,6 +436,7 @@ internal sealed class MainForm : Form
 
         int threads   = (int)_threadBox.Value;
         int total     = emailsToCheck.Count;
+        _processTotal = total;
         int completed = 0;
 
         var valid        = new List<string>();
@@ -457,6 +475,7 @@ internal sealed class MainForm : Form
 
                     this.Invoke(() =>
                     {
+                        _processCompleted = done;
                         Log($"[{(isValid ? " OK " : "INVL")}] {emailCopy} — {status}");
 
                         var now = DateTime.Now;
@@ -650,8 +669,10 @@ internal sealed class MainForm : Form
     {
         _busy        = true;
         _paused      = false;
-        _processStart = DateTime.Now;
-        _elapsedLbl.Text    = "0:00";
+        _processStart     = DateTime.Now;
+        _processCompleted = 0;
+        _processTotal     = 0;
+        _elapsedLbl.Text  = "0:00";
         _elapsedTimer.Start();
         _apiKeyBox.Enabled  = false;
         _removeBtn.Enabled  = false;
