@@ -30,7 +30,8 @@ internal static class EmailLogic
 
     private static readonly HashSet<string> InvalidStatuses = new(StringComparer.OrdinalIgnoreCase)
     {
-        "notexist","not_exist","error","invalid","disabled","disable"
+        "notexist", "not_exist", "not exist", "noexist", "no_exist", "no exist",
+        "error", "invalid", "disabled", "disable", "inactive", "bounce",
     };
 
     // ── Email extraction ──────────────────────────────────────────────────────
@@ -198,31 +199,52 @@ internal static class EmailLogic
     })
     { Timeout = TimeSpan.FromSeconds(15) };
 
+    private static readonly int[] RetryDelaysMs = { 1500, 3000, 6000 };
+
     /// <summary>Check a single email via the YChecker API.
-    /// Returns (isReachable, statusString). Fails safe — keeps email on error.</summary>
+    /// 429 is retried up to 3 times with back-off then marked invalid.
+    /// Network errors keep the email (fail-safe).</summary>
     public static async Task<(bool IsValid, string Status)> CheckEmailValidityAsync(
         string email, string apiKey)
     {
-        try
+        for (int attempt = 0; ; attempt++)
         {
-            using var req = new HttpRequestMessage(
-                HttpMethod.Get,
-                $"https://app.sonjj.com/v1/check_email/?email={Uri.EscapeDataString(email)}");
-            req.Headers.Add("X-Api-Key", apiKey);
-
-            var resp = await Http.SendAsync(req);
-            if (resp.IsSuccessStatusCode)
+            try
             {
-                var data = await resp.Content.ReadFromJsonAsync<Dictionary<string, string>>();
-                var status = data?.GetValueOrDefault("status", "") ?? "";
-                return (!InvalidStatuses.Contains(status), status.ToLowerInvariant());
+                using var req = new HttpRequestMessage(
+                    HttpMethod.Get,
+                    $"https://app.sonjj.com/v1/check_email/?email={Uri.EscapeDataString(email)}");
+                req.Headers.Add("X-Api-Key", apiKey);
+
+                var resp = await Http.SendAsync(req);
+
+                if ((int)resp.StatusCode == 429)
+                {
+                    if (attempt < RetryDelaysMs.Length)
+                    {
+                        await Task.Delay(RetryDelaysMs[attempt]);
+                        continue;
+                    }
+                    return (false, "rate_limited");
+                }
+
+                if (resp.IsSuccessStatusCode)
+                {
+                    var data = await resp.Content.ReadFromJsonAsync<Dictionary<string, string>>();
+                    var status = data?.GetValueOrDefault("status", "") ?? "";
+                    if (string.IsNullOrWhiteSpace(status))
+                        return (true, "no_status");
+                    return (!InvalidStatuses.Contains(status), status.ToLowerInvariant());
+                }
+
+                // Other non-success codes: keep email (fail-safe)
+                return (true, $"http_{(int)resp.StatusCode}");
             }
-            return (true, $"http_{(int)resp.StatusCode}");
-        }
-        catch (Exception ex)
-        {
-            var msg = ex.Message;
-            return (true, $"err:{(msg.Length > 60 ? msg[..60] : msg)}");
+            catch (Exception ex)
+            {
+                var msg = ex.Message;
+                return (true, $"err:{(msg.Length > 60 ? msg[..60] : msg)}");
+            }
         }
     }
 
