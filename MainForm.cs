@@ -145,43 +145,28 @@ internal sealed class MainForm : Form
         fileRow.Controls.Add(btnPanel,  0, 0);
         fileRow.Controls.Add(_fileList, 1, 0);
 
-        // ── Row 2: Checkboxes (left) + Threads (right) ────────────────────────
-        var cbRow = new TableLayoutPanel
+        // ── Row 2: Checkboxes + Threads inline ───────────────────────────────
+        var cbRow = new FlowLayoutPanel
         {
-            ColumnCount = 2, RowCount = 1,
-            Dock = DockStyle.Fill, AutoSize = true,
-            Margin = new Padding(0, 0, 0, 8),
-        };
-        cbRow.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-        cbRow.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
-        cbRow.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-
-        var cbFlow = new FlowLayoutPanel
-        {
+            Dock          = DockStyle.Fill,
             AutoSize      = true,
             FlowDirection = FlowDirection.LeftToRight,
-            Dock          = DockStyle.Fill,
+            Margin        = new Padding(0, 0, 0, 8),
+            WrapContents  = false,
         };
-        _dedupCb    = new CheckBox { Text = "de-duplicate",    AutoSize = true, Margin = new Padding(0, 2, 14, 2) };
-        _validityCb = new CheckBox { Text = "check validity",  AutoSize = true, Margin = new Padding(0, 2, 14, 2) };
-        _groupCb    = new CheckBox { Text = "group by domain", AutoSize = true, Margin = new Padding(0, 2, 0,  2) };
+        _dedupCb    = new CheckBox { Text = "de-duplicate",    AutoSize = true, Margin = new Padding(0, 3, 14, 2) };
+        _validityCb = new CheckBox { Text = "check validity",  AutoSize = true, Margin = new Padding(0, 3, 14, 2) };
+        _groupCb    = new CheckBox { Text = "group by domain", AutoSize = true, Margin = new Padding(0, 3, 20, 2) };
         _dedupCb.CheckedChanged    += OnDedup;
         _validityCb.CheckedChanged += OnCheckValidity;
         _groupCb.CheckedChanged    += OnGroupByDomain;
-        cbFlow.Controls.AddRange(new Control[] { _dedupCb, _validityCb, _groupCb });
 
-        var threadsFlow = new FlowLayoutPanel
-        {
-            AutoSize      = true,
-            FlowDirection = FlowDirection.LeftToRight,
-            Anchor        = AnchorStyles.Right | AnchorStyles.Top,
-        };
         var threadsLbl = new Label
         {
             Text     = "Threads:",
             AutoSize = true,
-            Anchor   = AnchorStyles.Left | AnchorStyles.Top,
             Padding  = new Padding(0, 4, 4, 0),
+            Margin   = new Padding(0, 0, 0, 0),
         };
         _threadBox = new NumericUpDown
         {
@@ -190,12 +175,9 @@ internal sealed class MainForm : Form
             Value     = 4,
             Width     = 52,
             TextAlign = HorizontalAlignment.Center,
+            Margin    = new Padding(0, 1, 0, 0),
         };
-        threadsFlow.Controls.Add(threadsLbl);
-        threadsFlow.Controls.Add(_threadBox);
-
-        cbRow.Controls.Add(cbFlow,      0, 0);
-        cbRow.Controls.Add(threadsFlow, 1, 0);
+        cbRow.Controls.AddRange(new Control[] { _dedupCb, _validityCb, _groupCb, threadsLbl, _threadBox });
 
         // ── Row 3: Email text area ────────────────────────────────────────────
         _emailBox = new RichTextBox
