@@ -35,8 +35,8 @@ internal sealed class MainForm : Form
     public MainForm()
     {
         Text          = "Email Checker";
-        MinimumSize   = new Size(480, 520);
-        Size          = new Size(550, 640);
+        MinimumSize   = new Size(380, 400);
+        Size          = new Size(420, 500);
         StartPosition = FormStartPosition.CenterScreen;
         Font          = new Font("Segoe UI", 9f);
 
@@ -47,29 +47,39 @@ internal sealed class MainForm : Form
         }
         catch { }
 
-        // ── Progress bar (docked bottom, slim, with bottom margin via padding) ─
-        var progressPanel = new Panel
+        // ── Bottom bar: progress bar on top, status label below ───────────────
+        var bottomPanel = new Panel
         {
             Dock    = DockStyle.Bottom,
-            Height  = 22,
-            Padding = new Padding(10, 3, 10, 6),
+            Height  = 44,
+            Padding = new Padding(10, 3, 10, 5),
         };
         _progressBar = new ProgressBar
         {
-            Dock    = DockStyle.Fill,
+            Dock    = DockStyle.Top,
+            Height  = 12,
             Minimum = 0,
             Maximum = 100,
             Value   = 0,
             Style   = ProgressBarStyle.Continuous,
         };
-        progressPanel.Controls.Add(_progressBar);
+        _statusLbl = new Label
+        {
+            Dock      = DockStyle.Fill,
+            AutoSize  = false,
+            TextAlign = ContentAlignment.MiddleLeft,
+            Text      = "Ready",
+            ForeColor = SystemColors.GrayText,
+        };
+        bottomPanel.Controls.Add(_progressBar); // Top → docks first
+        bottomPanel.Controls.Add(_statusLbl);   // Fill → takes remaining space below
 
         // ── Content area ─────────────────────────────────────────────────────
         var content = new TableLayoutPanel
         {
             Dock        = DockStyle.Fill,
             ColumnCount = 1,
-            RowCount    = 6,
+            RowCount    = 5,
             Padding     = new Padding(12, 12, 12, 6),
         };
         content.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
@@ -78,7 +88,6 @@ internal sealed class MainForm : Form
         content.RowStyles.Add(new RowStyle(SizeType.AutoSize));       // 2: Checkboxes + threads
         content.RowStyles.Add(new RowStyle(SizeType.Percent, 100));   // 3: Email text
         content.RowStyles.Add(new RowStyle(SizeType.AutoSize));       // 4: Action buttons
-        content.RowStyles.Add(new RowStyle(SizeType.AutoSize));       // 5: Status label
 
         // ── Row 0: API key ────────────────────────────────────────────────────
         var apiRow = new TableLayoutPanel
@@ -137,7 +146,7 @@ internal sealed class MainForm : Form
             Dock              = DockStyle.Fill,
             SelectionMode     = SelectionMode.One,
             HorizontalScrollbar = true,
-            Height            = 110,
+            Height            = 84,   // matches 3-button panel height
         };
         _fileList.SelectedIndexChanged += (_, _) =>
             _removeBtn.Enabled = !_busy && _fileList.SelectedIndex >= 0;
@@ -154,9 +163,9 @@ internal sealed class MainForm : Form
             Margin        = new Padding(0, 0, 0, 8),
             WrapContents  = false,
         };
-        _dedupCb    = new CheckBox { Text = "de-duplicate",    AutoSize = true, Margin = new Padding(0, 3, 14, 2) };
-        _validityCb = new CheckBox { Text = "check validity",  AutoSize = true, Margin = new Padding(0, 3, 14, 2) };
-        _groupCb    = new CheckBox { Text = "group by domain", AutoSize = true, Margin = new Padding(0, 3, 20, 2) };
+        _dedupCb    = new CheckBox { Text = "de-duplicate",    AutoSize = true, Margin = new Padding(0, 3, 8, 2) };
+        _validityCb = new CheckBox { Text = "check validity",  AutoSize = true, Margin = new Padding(0, 3, 8, 2) };
+        _groupCb    = new CheckBox { Text = "group by domain", AutoSize = true, Margin = new Padding(0, 3, 10, 2) };
         _dedupCb.CheckedChanged    += OnDedup;
         _validityCb.CheckedChanged += OnCheckValidity;
         _groupCb.CheckedChanged    += OnGroupByDomain;
@@ -165,7 +174,7 @@ internal sealed class MainForm : Form
         {
             Text     = "Threads:",
             AutoSize = true,
-            Padding  = new Padding(0, 4, 4, 0),
+            Padding  = new Padding(0, 4, 2, 0),
             Margin   = new Padding(0, 0, 0, 0),
         };
         _threadBox = new NumericUpDown
@@ -173,7 +182,7 @@ internal sealed class MainForm : Form
             Minimum   = 1,
             Maximum   = 20,
             Value     = 4,
-            Width     = 52,
+            Width     = 44,
             TextAlign = HorizontalAlignment.Center,
             Margin    = new Padding(0, 1, 0, 0),
         };
@@ -189,63 +198,44 @@ internal sealed class MainForm : Form
             DetectUrls = false,
         };
 
-        // ── Row 4: Action buttons — Pause, Stop, Logs (left) | Save (right) ───
+        // ── Row 4: Action buttons — 4 equal columns on one row ───────────────
         var actionRow = new TableLayoutPanel
         {
-            ColumnCount = 2, RowCount = 1,
+            ColumnCount = 4, RowCount = 1,
             Dock = DockStyle.Fill, AutoSize = true,
             Margin = new Padding(0, 8, 0, 2),
         };
-        actionRow.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
-        actionRow.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
+        actionRow.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 25));
+        actionRow.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 25));
+        actionRow.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 25));
+        actionRow.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 25));
         actionRow.RowStyles.Add(new RowStyle(SizeType.AutoSize));
 
-        var leftBtns = new FlowLayoutPanel
-        {
-            AutoSize      = true,
-            FlowDirection = FlowDirection.LeftToRight,
-            Anchor        = AnchorStyles.Left | AnchorStyles.Top,
-        };
         _pauseBtn = MakeButton("Pause", OnPause);
         _stopBtn  = MakeButton("Stop",  OnStop);
         _logsBtn  = MakeButton("Logs",  OnShowLogs);
+        _saveBtn  = MakeButton("Save",  OnSave);
         _pauseBtn.Enabled = false;
         _stopBtn.Enabled  = false;
-        leftBtns.Controls.AddRange(new Control[] { _pauseBtn, _stopBtn, _logsBtn });
+        _pauseBtn.Dock = DockStyle.Fill;
+        _stopBtn.Dock  = DockStyle.Fill;
+        _logsBtn.Dock  = DockStyle.Fill;
+        _saveBtn.Dock  = DockStyle.Fill;
 
-        var rightBtns = new FlowLayoutPanel
-        {
-            AutoSize      = true,
-            FlowDirection = FlowDirection.RightToLeft,
-            Dock          = DockStyle.Fill,
-        };
-        _saveBtn = MakeButton("Save", OnSave);
-        rightBtns.Controls.Add(_saveBtn);
-
-        actionRow.Controls.Add(leftBtns,  0, 0);
-        actionRow.Controls.Add(rightBtns, 1, 0);
-
-        // ── Row 5: Status label ───────────────────────────────────────────────
-        _statusLbl = new Label
-        {
-            Dock      = DockStyle.Fill,
-            AutoSize  = false,
-            TextAlign = ContentAlignment.MiddleLeft,
-            Text      = "Ready",
-            Height    = 20,
-            ForeColor = SystemColors.GrayText,
-        };
+        actionRow.Controls.Add(_pauseBtn, 0, 0);
+        actionRow.Controls.Add(_stopBtn,  1, 0);
+        actionRow.Controls.Add(_logsBtn,  2, 0);
+        actionRow.Controls.Add(_saveBtn,  3, 0);
 
         // ── Assemble ─────────────────────────────────────────────────────────
-        content.Controls.Add(apiRow,     0, 0);
-        content.Controls.Add(fileRow,    0, 1);
-        content.Controls.Add(cbRow,      0, 2);
-        content.Controls.Add(_emailBox,  0, 3);
-        content.Controls.Add(actionRow,  0, 4);
-        content.Controls.Add(_statusLbl, 0, 5);
+        content.Controls.Add(apiRow,    0, 0);
+        content.Controls.Add(fileRow,   0, 1);
+        content.Controls.Add(cbRow,     0, 2);
+        content.Controls.Add(_emailBox, 0, 3);
+        content.Controls.Add(actionRow, 0, 4);
 
         Controls.Add(content);
-        Controls.Add(progressPanel);
+        Controls.Add(bottomPanel);
 
         FormClosing += (_, _) =>
         {
